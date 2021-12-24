@@ -39,12 +39,12 @@ def load_data(
         raise ValueError("unspecified data directory")
     all_files = _list_image_files_recursively(data_dir)
     classes = None
-    if class_cond:
+    #if class_cond:
         # Assume classes are the first part of the filename,
         # before an underscore.
-        class_names = [bf.basename(path).split("_")[0] for path in all_files]
-        sorted_classes = {x: i for i, x in enumerate(sorted(set(class_names)))}
-        classes = [sorted_classes[x] for x in class_names]
+    #    class_names = [bf.basename(path).split("_")[0] for path in all_files]
+    #    sorted_classes = {x: i for i, x in enumerate(sorted(set(class_names)))}
+    #    classes = [sorted_classes[x] for x in class_names]
     dataset = ImageDataset(
         image_size,
         all_files,
@@ -70,9 +70,13 @@ def _list_image_files_recursively(data_dir):
     results = []
     for entry in sorted(bf.listdir(data_dir)):
         full_path = bf.join(data_dir, entry)
-        ext = entry.split(".")[-1]
-        if "." in entry and ext.lower() in ["jpg", "jpeg", "png", "gif", "webp"]:
-            results.append(full_path)
+        entry = entry.split(".")
+        ext = entry[-1].strip()
+        filename = entry[0]
+        if ext and ext.lower() in ["jpg", "jpeg", "png", "gif", "webp"]:
+            text_path = bf.join(data_dir, filename+'.txt')
+            if bf.exists(text_path):
+                results.append((full_path, text_path))
         elif bf.isdir(full_path):
             results.extend(_list_image_files_recursively(full_path))
     return results
@@ -82,7 +86,7 @@ class ImageDataset(Dataset):
     def __init__(
         self,
         resolution,
-        image_paths,
+        file_paths,
         classes=None,
         shard=0,
         num_shards=1,
@@ -91,17 +95,17 @@ class ImageDataset(Dataset):
     ):
         super().__init__()
         self.resolution = resolution
-        self.local_images = image_paths[shard:][::num_shards]
+        self.local_files = file_paths[shard:][::num_shards]
         self.local_classes = None if classes is None else classes[shard:][::num_shards]
         self.random_crop = random_crop
         self.random_flip = random_flip
 
     def __len__(self):
-        return len(self.local_images)
+        return len(self.local_files)
 
     def __getitem__(self, idx):
-        path = self.local_images[idx]
-        with bf.BlobFile(path, "rb") as f:
+        path = self.local_files[idx]
+        with bf.BlobFile(path[0], "rb") as f:
             pil_image = Image.open(f)
             pil_image.load()
         pil_image = pil_image.convert("RGB")
@@ -119,7 +123,11 @@ class ImageDataset(Dataset):
         out_dict = {}
         if self.local_classes is not None:
             out_dict["y"] = np.array(self.local_classes[idx], dtype=np.int64)
-        return np.transpose(arr, [2, 0, 1]), out_dict
+
+        with bf.BlobFile(path[1], "r") as f:
+            text = f.read().strip()
+
+        return np.transpose(arr, [2, 0, 1]), out_dict, text
 
 
 def center_crop_arr(pil_image, image_size):

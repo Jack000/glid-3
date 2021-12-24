@@ -6,18 +6,20 @@ import math
 
 import torch as th
 import torch.nn as nn
-
-
-# PyTorch 1.7 has SiLU, but we support PyTorch 1.5.
-class SiLU(nn.Module):
-    def forward(self, x):
-        return x * th.sigmoid(x)
-
+import torch.nn.functional as F
 
 class GroupNorm32(nn.GroupNorm):
-    def forward(self, x):
-        return super().forward(x.float()).type(x.dtype)
+    def __init__(self, num_groups, num_channels, swish, eps=1e-5):
+        super().__init__(num_groups=num_groups, num_channels=num_channels, eps=eps)
+        self.swish = swish
 
+    def forward(self, x):
+        y = super().forward(x.float()).to(x.dtype)
+        if self.swish == 1.0:
+            y = F.silu(y)
+        elif self.swish:
+            y = y * F.sigmoid(y * float(self.swish))
+        return y
 
 def conv_nd(dims, *args, **kwargs):
     """
@@ -90,14 +92,14 @@ def mean_flat(tensor):
     return tensor.mean(dim=list(range(1, len(tensor.shape))))
 
 
-def normalization(channels):
+def normalization(channels, swish=0.0):
     """
-    Make a standard normalization layer.
+    Make a standard normalization layer, with an optional swish activation.
 
     :param channels: number of input channels.
     :return: an nn.Module for normalization.
     """
-    return GroupNorm32(32, channels)
+    return GroupNorm32(num_channels=channels, num_groups=32, swish=swish)
 
 
 def timestep_embedding(timesteps, dim, max_period=10000):

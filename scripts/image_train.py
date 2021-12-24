@@ -36,7 +36,6 @@ def main():
         image_size=args.image_size,
         class_cond=args.class_cond,
     )
-
     logger.log("training...")
     TrainLoop(
         model=model,
