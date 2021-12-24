@@ -1,6 +1,6 @@
 # GLID-3
 
-GLID-3 is a combination of OpenAI GLIDE, [Latent Diffusion](https://github.com/CompVis/latent-diffusion) and CLIP
+GLID-3 is a combination of OpenAI GLIDE, [Latent Diffusion](https://github.com/CompVis/latent-diffusion) and CLIP. The code is a modified version of (guided diffusion)[https://github.com/openai/guided-diffusion]
 
 main ideas:
 - use same text conditioning as GLIDE
