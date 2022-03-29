@@ -48,7 +48,7 @@ def main():
     del encoder.loss
 
     logger.log("loading clip...")
-    clip_model, _ = clip.load('ViT-B/16', device=dist_util.dev(), jit=False)
+    clip_model, _ = clip.load('ViT-L/14', device=dist_util.dev(), jit=False)
     clip_model.eval().requires_grad_(False)
     set_requires_grad(clip_model, False)
 
@@ -145,7 +145,7 @@ def create_argparser():
         vq_model=None,
     )
     defaults.update(model_and_diffusion_defaults())
-    defaults['encoder_channels'] = 512
+    defaults['encoder_channels'] = 768
     parser = argparse.ArgumentParser()
     add_dict_to_argparser(parser, defaults)
     return parser

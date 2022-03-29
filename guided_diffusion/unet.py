@@ -333,6 +333,7 @@ class UNetModel(nn.Module):
         use_scale_shift_norm=False,
         resblock_updown=False,
         encoder_channels=None,
+        emb_condition_channels=None,
     ):
         super().__init__()
         if num_heads_upsample == -1:
@@ -354,6 +355,7 @@ class UNetModel(nn.Module):
         self.num_head_channels = num_head_channels
         self.num_heads_upsample = num_heads_upsample
         self.encoder_channels = encoder_channels
+        self.emb_condition_channels = emb_condition_channels
 
         time_embed_dim = model_channels * 4
         self.time_embed = nn.Sequential(
@@ -363,7 +365,7 @@ class UNetModel(nn.Module):
         )
 
         if encoder_channels is not None:
-            self.clip_proj = nn.Linear(512, model_channels * 4, dtype=th.float16)
+            self.clip_proj = nn.Linear(768, model_channels * 4, dtype=self.dtype)
 
         if self.num_classes is not None:
             self.label_emb = nn.Embedding(num_classes, time_embed_dim)
@@ -399,6 +401,7 @@ class UNetModel(nn.Module):
                             encoder_channels=encoder_channels,
                         )
                     )
+
                 self.input_blocks.append(TimestepEmbedSequential(*layers))
                 self._feature_size += ch
                 input_block_chans.append(ch)
@@ -425,9 +428,19 @@ class UNetModel(nn.Module):
                 ds *= 2
                 self._feature_size += ch
 
-        self.middle_block = TimestepEmbedSequential(
+        if self.emb_condition_channels > 0:
+            #self.external_block = conv_nd(dims, self.emb_condition_channels, 32, 3, padding=1)
+            self.external_block = nn.Sequential(
+                Downsample(self.emb_condition_channels, True, out_channels=16),
+                Downsample(16, True, out_channels=64),
+            )
+            middle_ch = ch+64
+        else:
+            middle_ch = ch
+
+        middle_block = TimestepEmbedSequential(
             ResBlock(
-                ch,
+                middle_ch,
                 time_embed_dim,
                 dropout,
                 dims=dims,
@@ -435,21 +448,28 @@ class UNetModel(nn.Module):
                 use_scale_shift_norm=use_scale_shift_norm,
             ),
             AttentionBlock(
-                ch,
+                middle_ch,
                 use_checkpoint=use_checkpoint,
                 num_heads=num_heads,
                 num_head_channels=num_head_channels,
                 encoder_channels=encoder_channels,
             ),
             ResBlock(
-                ch,
+                middle_ch,
                 time_embed_dim,
                 dropout,
                 dims=dims,
                 use_checkpoint=use_checkpoint,
                 use_scale_shift_norm=use_scale_shift_norm,
+                out_channels=ch
             ),
         )
+
+        if self.emb_condition_channels > 0:
+            self.middle_block_cond = middle_block
+        else:
+            self.middle_block = middle_block
+
         self._feature_size += ch
 
         self.output_blocks = nn.ModuleList([])
@@ -510,9 +530,18 @@ class UNetModel(nn.Module):
         Convert the torso of the model to float16.
         """
         if self.encoder_channels is not None:
-            self.clip_proj.apply(convert_module_to_f16)
+            self.clip_proj.weight.data = self.clip_proj.weight.data.half()
+            if self.clip_proj.bias is not None:
+                self.clip_proj.bias.data = self.clip_proj.bias.data.half()
+
         self.input_blocks.apply(convert_module_to_f16)
-        self.middle_block.apply(convert_module_to_f16)
+
+        if self.emb_condition_channels > 0:
+            self.external_block.apply(convert_module_to_f16)
+            self.middle_block_cond.apply(convert_module_to_f16)
+        else:
+            self.middle_block.apply(convert_module_to_f16)
+
         self.output_blocks.apply(convert_module_to_f16)
 
     def convert_to_fp32(self):
@@ -520,12 +549,21 @@ class UNetModel(nn.Module):
         Convert the torso of the model to float32.
         """
         if self.encoder_channels is not None:
-            self.clip_proj.apply(convert_module_to_f32)
+            self.clip_proj.weight.data = self.clip_proj.weight.data.float()
+            if self.clip_proj.bias is not None:
+                self.clip_proj.bias.data = self.clip_proj.bias.data.float()
+
         self.input_blocks.apply(convert_module_to_f32)
-        self.middle_block.apply(convert_module_to_f32)
+
+        if self.emb_condition_channels > 0:
+            self.external_block.apply(convert_module_to_f32)
+            self.middle_block_cond.apply(convert_module_to_f32)
+        else:
+            self.middle_block.apply(convert_module_to_f32)
+
         self.output_blocks.apply(convert_module_to_f32)
 
-    def forward(self, x, timesteps, y=None, xf_proj=None, xf_out=None):
+    def forward(self, x, timesteps, y=None, xf_proj=None, xf_out=None, image_embeds=None):
         """
         Apply the model to an input batch.
 
@@ -556,8 +594,15 @@ class UNetModel(nn.Module):
                 h = module(h, emb)
             hs.append(h)
 
+        if image_embeds is not None:
+            im = image_embeds.type(self.dtype)
+            im = self.external_block(im)
+            h = th.cat([h, im], dim=1)
+
         if xf_out is not None:
             h = self.middle_block(h, emb, xf_out)
+        elif self.emb_condition_channels > 0:
+            h = self.middle_block_cond(h, emb)
         else:
             h = self.middle_block(h, emb)
 

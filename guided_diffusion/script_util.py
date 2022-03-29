@@ -60,6 +60,7 @@ def model_and_diffusion_defaults():
         resblock_updown=False,
         use_fp16=False,
         encoder_channels=None,
+        emb_condition_channels=0,
     )
     res.update(diffusion_defaults())
     return res
@@ -95,6 +96,7 @@ def create_model_and_diffusion(
     resblock_updown,
     use_fp16,
     encoder_channels,
+    emb_condition_channels,
 ):
     model = create_model(
         image_size,
@@ -113,6 +115,7 @@ def create_model_and_diffusion(
         resblock_updown=resblock_updown,
         use_fp16=use_fp16,
         encoder_channels=encoder_channels,
+        emb_condition_channels = emb_condition_channels,
     )
     diffusion = create_gaussian_diffusion(
         steps=diffusion_steps,
@@ -144,6 +147,7 @@ def create_model(
     resblock_updown=False,
     use_fp16=False,
     encoder_channels=None,
+    emb_condition_channels=0,
 ):
     if channel_mult == "":
         if image_size == 512:
@@ -165,7 +169,7 @@ def create_model(
     for res in attention_resolutions.split(","):
         attention_ds.append(image_size // int(res))
 
-    in_channels = 3 if image_size >= 64 else 4
+    in_channels = 4 if image_size == 32 else 3
     out_channels = 3 if not learn_sigma else 6
     if image_size == 32:
         out_channels = 8
@@ -188,6 +192,7 @@ def create_model(
         use_scale_shift_norm=use_scale_shift_norm,
         resblock_updown=resblock_updown,
         encoder_channels=encoder_channels,
+        emb_condition_channels=emb_condition_channels,
     )
 
 

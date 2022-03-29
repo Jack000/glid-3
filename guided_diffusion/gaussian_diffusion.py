@@ -14,6 +14,7 @@ import torch as th
 from .nn import mean_flat
 from .losses import normal_kl, discretized_gaussian_log_likelihood
 
+import torch.nn.functional as F
 
 def get_named_beta_schedule(schedule_name, num_diffusion_timesteps):
     """
@@ -294,7 +295,7 @@ class GaussianDiffusion:
             if denoised_fn is not None:
                 x = denoised_fn(x)
             if clip_denoised:
-                return x.clamp(-1, 1)
+                return x.clamp(-2, 2)
             return x
 
         if self.model_mean_type == ModelMeanType.PREVIOUS_X:
