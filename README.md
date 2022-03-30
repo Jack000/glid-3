@@ -26,7 +26,12 @@ wget https://ommer-lab.com/files/latent-diffusion/vq-f8.zip && unzip vq-f8.zip -
 
 # download latest pretrained glid-3 model
 wget https://dall-3.com/models/glid-3/ema-latest.pt
+
+# default (fast PLMS sampling)
 python sample.py --model_path ema-latest.pt --ldm_path vq-f8/model.ckpt --ldm_config_path vq-f8/config.yaml --width 256 --height 256 --batch_size 6 --num_batches 6 --text "a cyberpunk girl with a scifi neuralink device on her head"
+
+# slow full ddpm run
+python sample.py --ddpm --model_path ema-latest.pt --ldm_path vq-f8/model.ckpt --ldm_config_path vq-f8/config.yaml --width 256 --height 256 --batch_size 6 --num_batches 6 --text "a cyberpunk girl with a scifi neuralink device on her head"
 
 # generated images saved to ./output/
 ```

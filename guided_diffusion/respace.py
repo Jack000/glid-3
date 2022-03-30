@@ -101,6 +101,9 @@ class SpacedDiffusion(GaussianDiffusion):
     def condition_score(self, cond_fn, *args, **kwargs):
         return super().condition_score(self._wrap_model(cond_fn), *args, **kwargs)
 
+    def get_eps(self, model, *args, **kwargs):
+        return super().get_eps(self._wrap_model(model), *args, **kwargs)
+
     def _wrap_model(self, model):
         if isinstance(model, _WrappedModel):
             return model
@@ -121,8 +124,10 @@ class _WrappedModel:
         self.original_num_steps = original_num_steps
 
     def __call__(self, x, ts, **kwargs):
+        ts = ts.float()
+        frac = ts.frac()
         map_tensor = th.tensor(self.timestep_map, device=ts.device, dtype=ts.dtype)
-        new_ts = map_tensor[ts]
-        if self.rescale_timesteps:
-            new_ts = new_ts.float() * (1000.0 / self.original_num_steps)
+        new_ts_1 = map_tensor[ts.floor().long()]
+        new_ts_2 = map_tensor[ts.ceil().long()]
+        new_ts = th.lerp(new_ts_1, new_ts_2, frac)
         return self.model(x, new_ts, **kwargs)

@@ -707,6 +707,290 @@ class GaussianDiffusion:
                 yield out
                 img = out["sample"]
 
+    def get_eps(
+        self,
+        model,
+        x,
+        t,
+        model_kwargs,
+        cond_fn=None,
+    ):
+        model_output = model(x, t, **model_kwargs)
+        if isinstance(model_output, tuple):
+            model_output, _ = model_output
+
+        eps = model_output[:, :4]
+        if cond_fn is not None:
+            alpha_bar = _extract_into_tensor_lerp(self.alphas_cumprod, t, x.shape)
+            eps = eps - th.sqrt(1 - alpha_bar) * cond_fn(x, t, **model_kwargs)
+        return eps
+
+    def eps_to_pred_xstart(
+        self,
+        x,
+        eps,
+        t,
+    ):
+        alpha_bar = _extract_into_tensor_lerp(self.alphas_cumprod, t, x.shape)
+        return (x - eps * th.sqrt(1 - alpha_bar)) / th.sqrt(alpha_bar)
+
+    def pndm_transfer(
+        self,
+        x,
+        eps,
+        t_1,
+        t_2,
+    ):
+        pred_xstart = self.eps_to_pred_xstart(x, eps, t_1)
+        alpha_bar_prev = _extract_into_tensor_lerp(self.alphas_cumprod, t_2, x.shape)
+        return pred_xstart * th.sqrt(alpha_bar_prev) + th.sqrt(1 - alpha_bar_prev) * eps
+
+    def prk_sample(
+        self,
+        model,
+        x,
+        t,
+        clip_denoised=True,
+        denoised_fn=None,
+        cond_fn=None,
+        model_kwargs=None,
+    ):
+        """
+        Sample x_{t-1} from the model using fourth-order Pseudo Runge-Kutta
+        (https://openreview.net/forum?id=PlKWVd2yBkY).
+        Same usage as p_sample().
+        """
+        if model_kwargs is None:
+            model_kwargs = {}
+
+        def process_xstart(x):
+            if denoised_fn is not None:
+                x = denoised_fn(x)
+            if clip_denoised:
+                return x.clamp(-2, 2)
+            return x
+
+        t_mid = t.float() - 0.5
+        t_prev = t - 1
+        eps_1 = self.get_eps(model, x, t, model_kwargs, cond_fn)
+        x_1 = self.pndm_transfer(x, eps_1, t, t_mid)
+        eps_2 = self.get_eps(model, x_1, t_mid, model_kwargs, cond_fn)
+        x_2 = self.pndm_transfer(x, eps_2, t, t_mid)
+        eps_3 = self.get_eps(model, x_2, t_mid, model_kwargs, cond_fn)
+        x_3 = self.pndm_transfer(x, eps_3, t, t_prev)
+        eps_4 = self.get_eps(model, x_3, t_prev, model_kwargs, cond_fn)
+        eps_prime = (eps_1 + 2 * eps_2 + 2 * eps_3 + eps_4) / 6
+
+        sample = self.pndm_transfer(x, eps_prime, t, t_prev)
+        pred_xstart = self.eps_to_pred_xstart(x, eps_prime, t)
+        pred_xstart = process_xstart(pred_xstart)
+        return {"sample": sample, "pred_xstart": pred_xstart, "eps": eps_prime}
+
+    def prk_sample_loop_progressive(
+        self,
+        model,
+        shape,
+        noise=None,
+        clip_denoised=True,
+        denoised_fn=None,
+        cond_fn=None,
+        model_kwargs=None,
+        device=None,
+        progress=False,
+    ):
+        """
+        Use PRK to sample from the model and yield intermediate samples from
+        each timestep of PRK.
+        Same usage as p_sample_loop_progressive().
+        """
+        if device is None:
+            device = next(model.parameters()).device
+        assert isinstance(shape, (tuple, list))
+        if noise is not None:
+            img = noise
+        else:
+            img = th.randn(*shape, device=device)
+        indices = list(range(self.num_timesteps))[::-1][1:-1]
+
+        if progress:
+            # Lazy import so that we don't depend on tqdm.
+            from tqdm.auto import tqdm
+
+            indices = tqdm(indices)
+
+        for i in indices:
+            t = th.tensor([i] * shape[0], device=device)
+            with th.no_grad():
+                out = self.prk_sample(
+                    model,
+                    img,
+                    t,
+                    clip_denoised=clip_denoised,
+                    denoised_fn=denoised_fn,
+                    cond_fn=cond_fn,
+                    model_kwargs=model_kwargs,
+                )
+                yield out
+                img = out["sample"]
+
+    def prk_sample_loop(
+        self,
+        model,
+        shape,
+        noise=None,
+        clip_denoised=True,
+        denoised_fn=None,
+        cond_fn=None,
+        model_kwargs=None,
+        device=None,
+        progress=False,
+    ):
+        """
+        Generate samples from the model using PRK.
+        Same usage as p_sample_loop().
+        """
+        final = None
+        for sample in self.prk_sample_loop_progressive(
+            model,
+            shape,
+            noise=noise,
+            clip_denoised=clip_denoised,
+            denoised_fn=denoised_fn,
+            cond_fn=cond_fn,
+            model_kwargs=model_kwargs,
+            device=device,
+            progress=progress,
+        ):
+            final = sample
+        return final["sample"]
+
+    def plms_sample(
+        self,
+        model,
+        x,
+        old_eps,
+        t,
+        clip_denoised=True,
+        denoised_fn=None,
+        cond_fn=None,
+        model_kwargs=None,
+    ):
+        """
+        Sample x_{t-1} from the model using fourth-order Pseudo Linear Multistep
+        (https://openreview.net/forum?id=PlKWVd2yBkY).
+        """
+        if model_kwargs is None:
+            model_kwargs = {}
+
+        def process_xstart(x):
+            if denoised_fn is not None:
+                x = denoised_fn(x)
+            if clip_denoised:
+                return x.clamp(-1, 1)
+            return x
+
+        eps = self.get_eps(model, x, t, model_kwargs, cond_fn)
+        eps_prime = (55 * eps - 59 * old_eps[-1] + 37 * old_eps[-2] - 9 * old_eps[-3]) / 24
+
+        sample = self.pndm_transfer(x, eps_prime, t, t - 1)
+        pred_xstart = self.eps_to_pred_xstart(x, eps, t)
+        pred_xstart = process_xstart(pred_xstart)
+        return {"sample": sample, "pred_xstart": pred_xstart, "eps": eps}
+
+    def plms_sample_loop_progressive(
+        self,
+        model,
+        shape,
+        noise=None,
+        clip_denoised=True,
+        denoised_fn=None,
+        cond_fn=None,
+        model_kwargs=None,
+        device=None,
+        progress=False,
+    ):
+        """
+        Use PLMS to sample from the model and yield intermediate samples from
+        each timestep of PLMS.
+        Same usage as p_sample_loop_progressive().
+        """
+        if device is None:
+            device = next(model.parameters()).device
+        assert isinstance(shape, (tuple, list))
+        if noise is not None:
+            img = noise
+        else:
+            img = th.randn(*shape, device=device)
+        indices = list(range(self.num_timesteps))[::-1][1:-1]
+
+        if progress:
+            # Lazy import so that we don't depend on tqdm.
+            from tqdm.auto import tqdm
+
+            indices = tqdm(indices)
+
+        old_eps = []
+
+        for i in indices:
+            t = th.tensor([i] * shape[0], device=device)
+            with th.no_grad():
+                if len(old_eps) < 3:
+                    out = self.prk_sample(
+                        model,
+                        img,
+                        t,
+                        clip_denoised=clip_denoised,
+                        denoised_fn=denoised_fn,
+                        cond_fn=cond_fn,
+                        model_kwargs=model_kwargs,
+                    )
+                else:
+                    out = self.plms_sample(
+                        model,
+                        img,
+                        old_eps,
+                        t,
+                        clip_denoised=clip_denoised,
+                        denoised_fn=denoised_fn,
+                        cond_fn=cond_fn,
+                        model_kwargs=model_kwargs,
+                    )
+                    old_eps.pop(0)
+                old_eps.append(out["eps"])
+                yield out
+                img = out["sample"]
+
+    def plms_sample_loop(
+        self,
+        model,
+        shape,
+        noise=None,
+        clip_denoised=True,
+        denoised_fn=None,
+        cond_fn=None,
+        model_kwargs=None,
+        device=None,
+        progress=False,
+    ):
+        """
+        Generate samples from the model using PLMS.
+        Same usage as p_sample_loop().
+        """
+        final = None
+        for sample in self.plms_sample_loop_progressive(
+            model,
+            shape,
+            noise=noise,
+            clip_denoised=clip_denoised,
+            denoised_fn=denoised_fn,
+            cond_fn=cond_fn,
+            model_kwargs=model_kwargs,
+            device=device,
+            progress=progress,
+        ):
+            final = sample
+        return final["sample"]
+
     def _vb_terms_bpd(
         self, model, x_start, x_t, t, clip_denoised=True, model_kwargs=None
     ):
@@ -907,3 +1191,14 @@ def _extract_into_tensor(arr, timesteps, broadcast_shape):
     while len(res.shape) < len(broadcast_shape):
         res = res[..., None]
     return res.expand(broadcast_shape)
+
+
+def _extract_into_tensor_lerp(arr, timesteps, broadcast_shape):
+    timesteps = timesteps.float()
+    frac = timesteps.frac()
+    while len(frac.shape) < len(broadcast_shape):
+        frac = frac[..., None]
+    res_1 = _extract_into_tensor(arr, timesteps.floor().long(), broadcast_shape)
+    res_2 = _extract_into_tensor(arr, timesteps.ceil().long(), broadcast_shape)
+    return th.lerp(res_1, res_2, frac)
+

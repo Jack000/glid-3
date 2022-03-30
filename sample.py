@@ -70,9 +70,14 @@ parser.add_argument('--seed', type = int, default=-1, required = False,
 parser.add_argument('--guidance_scale', type = float, default = 4.0, required = False,
                     help='classifier-free guidance scale')
 
+parser.add_argument('--steps', type = int, default = 0, required = False,
+                    help='number of diffusion steps')
+
 parser.add_argument('--cpu', dest='cpu', action='store_true')
 
 parser.add_argument('--clip_score', dest='clip_score', action='store_true')
+
+parser.add_argument('--ddpm', dest='ddpm', action='store_true') # turn on for full 1000 ddpm run (slow)
 
 args = parser.parse_args()
 
@@ -94,7 +99,7 @@ model_params = {
     'class_cond': False,
     'diffusion_steps': 1000,
     'rescale_timesteps': True,
-    'timestep_respacing': '1000',  # Modify this value to decrease the number of
+    'timestep_respacing': '27',  # Modify this value to decrease the number of
                                    # timesteps.
     'image_size': 32,
     'learn_sigma': True,
@@ -107,6 +112,12 @@ model_params = {
     'use_fp16': True,
     'use_scale_shift_norm': True
 }
+
+if args.ddpm:
+    model_params['timestep_respacing'] = '1000'
+
+if args.steps:
+    model_params['timestep_respacing'] = args.steps
 
 model_config = model_and_diffusion_defaults()
 model_config.update(model_params)
@@ -142,7 +153,6 @@ set_requires_grad(ldm, False)
 clip_model, clip_preprocess = clip.load('ViT-L/14', device=device, jit=False)
 clip_model.eval().requires_grad_(False)
 set_requires_grad(clip_model, False)
-#del clip_model.visual
 
 def do_run():
     if args.seed >= 0:
@@ -173,16 +183,35 @@ def do_run():
         eps = torch.cat([half_eps, half_eps], dim=0)
         return torch.cat([eps, rest], dim=1)
 
-    cur_t = None
-
     if model_config['timestep_respacing'].startswith('ddim'):
         sample_fn = diffusion.ddim_sample_loop_progressive
-    else:
+    elif args.ddpm:
         sample_fn = diffusion.p_sample_loop_progressive
+    else:
+        sample_fn = diffusion.plms_sample_loop_progressive
+
+    def save_sample(i, sample, clip_score=False):
+        for k, image in enumerate(sample['pred_xstart'][:args.batch_size]):
+            image = 2*image
+            im = image.unsqueeze(0)
+            im_quant, _, _ = ldm.quantize(im)
+            out = ldm.decode(im_quant)
+
+            out = TF.to_pil_image(out.squeeze(0).add(1).div(2).clamp(0, 1))
+
+            filename = f'output/{args.prefix}_progress_{i * args.batch_size + k:05}.png'
+            out.save(filename)
+
+            if clip_score:
+                image_emb = clip_model.encode_image(clip_preprocess(out).unsqueeze(0).to(device))
+                image_emb_norm = image_emb / image_emb.norm(dim=-1, keepdim=True)
+
+                similarity = torch.nn.functional.cosine_similarity(image_emb_norm, text_emb_norm, dim=-1)
+
+                final_filename = f'output/{args.prefix}_{similarity.item():0.3f}_{i * args.batch_size + k:05}.png'
+                os.rename(filename, final_filename)
 
     for i in range(args.num_batches):
-        cur_t = diffusion.num_timesteps - 1
-
         samples = sample_fn(
             model_fn,
             (args.batch_size*2, 4, int(args.height/8), int(args.width/8)),
@@ -194,27 +223,9 @@ def do_run():
         )
 
         for j, sample in enumerate(samples):
-            cur_t -= 1
-            if j % 50 == 0 or cur_t == -1 or j == 999:
-                for k, image in enumerate(sample['pred_xstart'][:args.batch_size]):
-                    image = 2*image
-                    im = image.unsqueeze(0)
-                    im_quant, _, _ = ldm.quantize(im)
-                    out = ldm.decode(im_quant)
-
-                    out = TF.to_pil_image(out.squeeze(0).add(1).div(2).clamp(0, 1))
-
-                    filename = f'output/{args.prefix}_progress_{i * args.batch_size + k:05}.png'
-                    out.save(filename)
-
-                    if j == 999 and args.clip_score:
-                        image_emb = clip_model.encode_image(clip_preprocess(out).unsqueeze(0).to(device))
-                        image_emb_norm = image_emb / image_emb.norm(dim=-1, keepdim=True)
-
-                        similarity = torch.nn.functional.cosine_similarity(image_emb_norm, text_emb_norm, dim=-1)
-
-                        final_filename = f'output/{args.prefix}_{similarity.item():0.3f}_{i * args.batch_size + k:05}.png'
-                        os.rename(filename, final_filename)
+            if j > 0 and j % 50 == 0:
+                save_sample(i, sample)
+        save_sample(i, sample, args.clip_score)
 
 gc.collect()
 do_run()
