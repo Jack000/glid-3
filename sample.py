@@ -44,7 +44,10 @@ parser.add_argument('--ldm_config_path', type=str, default = './vq-f8/config.yam
                    help='path to the LDM first stage config. This should be a .yaml file')
 
 parser.add_argument('--text', type = str, required = False,
-                    help='your text prompt, separate with | characters')
+                    help='your text prompt')
+
+parser.add_argument('--negative', type = str, required = False, default = '',
+                    help='negative text prompt')
 
 parser.add_argument('--prefix', type = str, required = False, default = '',
                     help='prefix for output files')
@@ -152,7 +155,7 @@ def do_run():
 
     text_out = text_out.permute(0, 2, 1)
 
-    text_blank = clip.tokenize(['']*args.batch_size).to(device)
+    text_blank = clip.tokenize([args.negative]*args.batch_size).to(device)
 
     text_emb_blank, text_out_blank = clip_model.encode_text(text_blank, out=True)
     text_out_blank = text_out_blank.permute(0, 2, 1)
