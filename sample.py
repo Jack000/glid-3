@@ -117,7 +117,7 @@ if args.ddpm:
     model_params['timestep_respacing'] = '1000'
 
 if args.steps:
-    model_params['timestep_respacing'] = args.steps
+    model_params['timestep_respacing'] = str(args.steps)
 
 model_config = model_and_diffusion_defaults()
 model_config.update(model_params)
