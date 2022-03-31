@@ -8,6 +8,8 @@ main ideas:
 - instead of upsampling, do diffusion in the latent diffusion space
 - add classifier-free guidance
 
+[try it on colab](https://colab.research.google.com/drive/1x4p2PokZ3XznBn35Q5BBD6K6Zs-tot5t?usp=sharing)
+
 # Install
 
 You will need to install [latent diffusion](https://github.com/CompVis/latent-diffusion)
@@ -19,6 +21,8 @@ pip install -e .
 ```
 
 # Sampling from pre-trained models
+note: this model is work in progress! image quality may not be ideal but it's usable
+note2: this model is trained on photographic images only, and may not work well for illustrations and artwork
 
 ```
 # first download latent diffusion model from CompVis (vq-f8)
