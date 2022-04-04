@@ -122,6 +122,7 @@ def load_latent_data(encoder, clip_model, clip, data_dir, batch_size, image_size
 
         batch = batch.to(dist_util.dev())
         emb, _, _ = encoder.encode(batch)
+        emb = emb/2
 
         yield emb, model_kwargs
 
